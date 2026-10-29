@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>微信机器人管理</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: #f5f6f8;
+            color: #1f2329;
+            min-height: 100vh;
+        }
+        .container { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        h1 { font-size: 18px; font-weight: 600; }
+        .account-name { margin-top: 5px; color: #6b7280; font-size: 13px; }
+        .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+        .btn-link { text-decoration: none; display: inline-flex; align-items: center; }
+        .btn {
+            border: none;
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background .15s;
+        }
+        .btn-primary { background: #1668dc; color: #fff; }
+        .btn-primary:hover { background: #3d8bff; }
+        .btn-danger { background: transparent; color: #d83931; border: 1px solid #f1b0ac; padding: 4px 12px; font-size: 13px; }
+        .btn-danger:hover { background: #fff1f0; }
+        .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+        table {
+            width: 100%;
+            min-width: 680px;
+            border-collapse: collapse;
+            background: #fff;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,.06);
+        }
+        .table-wrap { overflow-x: auto; border-radius: 8px; }
+        th, td {
+            text-align: left;
+            padding: 12px 14px;
+            font-size: 14px;
+            border-bottom: 1px solid #f0f1f3;
+        }
+        th { background: #fafbfc; color: #6b7280; font-weight: 500; font-size: 13px; }
+        tr:last-child td { border-bottom: none; }
+        .empty { text-align: center; color: #9ca3af; padding: 40px 0; font-size: 14px; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+        .badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+        }
+        .badge-online { background: #e8f7ee; color: #1a9e50; }
+        .badge-offline { background: #f3f4f6; color: #6b7280; }
+
+        /* 扫码弹窗 */
+        .modal-mask {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,.45);
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+        .modal-mask.show { display: flex; }
+        .modal {
+            background: #fff;
+            border-radius: 8px;
+            padding: 24px;
+            width: 320px;
+            text-align: center;
+        }
+        .modal h2 { font-size: 16px; margin-bottom: 16px; }
+        .qr-box {
+            width: 220px;
+            height: 220px;
+            margin: 0 auto 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #fafbfc;
+            border: 1px solid #eef0f2;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .qr-box img { max-width: 100%; max-height: 100%; }
+        .qr-box a { color: #1668dc; font-size: 13px; word-break: break-all; padding: 8px; }
+        .qr-status { font-size: 14px; color: #6b7280; min-height: 22px; margin-bottom: 12px; }
+        .qr-status.ok { color: #1a9e50; }
+        .qr-status.err { color: #d83931; }
+        .modal-actions { display: flex; gap: 10px; justify-content: center; }
+        .btn-ghost { background: #f3f4f6; color: #374151; }
+        .btn-ghost:hover { background: #e5e7eb; }
+        /* 公告栏 */
+        .notice {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            background: #eef5ff;
+            border: 1px solid #c8deff;
+            border-radius: 8px;
+            padding: 12px 14px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #1f3a5f;
+        }
+        .notice-text { flex: 1; }
+        .notice-close {
+            border: none;
+            background: none;
+            color: #6b7280;
+            font-size: 16px;
+            line-height: 1.4;
+            cursor: pointer;
+            padding: 0 2px;
+        }
+        .notice-close:hover { color: #1f2329; }
+        @media (max-width: 640px) {
+            header { align-items: flex-start; flex-direction: column; }
+            .header-actions { justify-content: flex-start; width: 100%; }
+        }
+    </style>
+    <script src="/auth.js"></script>
+    <script src="/qrcode.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div>
+            <h1>我的机器人</h1>
+            <div class="account-name" id="currentUsername"></div>
+        </div>
+        <div class="header-actions">
+            <a class="btn btn-ghost btn-link" id="adminLink" href="/admin.html" style="display:none">账号管理</a>
+            <button class="btn btn-primary" id="addBotBtn">添加机器人</button>
+            <button class="btn btn-ghost" id="logoutBtn">退出</button>
+        </div>
+    </header>
+    <div class="notice" id="noticeBar">
+        <div class="notice-text">
+            一个微信号只能绑定一个机器人。用同一个微信号再次扫码不会创建新机器人，只会替换原有机器人的登录状态；如需多个机器人，请使用不同的微信号分别扫码。
+        </div>
+        <button class="notice-close" id="noticeCloseBtn" title="关闭">×</button>
+    </div>
+    <div class="table-wrap">
+    <table>
+        <thead>
+        <tr>
+            <th>用户 ID</th>
+            <th>Bot ID</th>
+            <th>状态</th>
+            <th>时间</th>
+            <th>操作</th>
+        </tr>
+        </thead>
+        <tbody id="botTableBody">
+        <tr><td colspan="5" class="empty">加载中…</td></tr>
+        </tbody>
+    </table>
+    </div>
+</div>
+
+<div class="modal-mask" id="qrModal">
+    <div class="modal">
+        <h2>使用微信扫码登录</h2>
+        <div class="qr-box" id="qrBox"></div>
+        <div class="qr-status" id="qrStatus">等待扫码…</div>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" id="qrCloseBtn">关闭</button>
+            <button class="btn btn-primary" id="qrRefreshBtn" style="display:none">刷新二维码</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const STATUS_TEXT = {
+        WAITING: '等待扫码…',
+        SCANNED: '已扫码，请在手机上确认',
+        CONFIRMED: '登录成功',
+        EXPIRED: '二维码已过期，请刷新',
+        FAILED: '登录失败，请重试'
+    };
+
+    let currentSlotId = null;
+    let pollTimer = null;
+
+    const qrModal = document.getElementById('qrModal');
+    const qrBox = document.getElementById('qrBox');
+    const qrStatus = document.getElementById('qrStatus');
+    const qrRefreshBtn = document.getElementById('qrRefreshBtn');
+
+    document.getElementById('addBotBtn').addEventListener('click', startLogin);
+    document.getElementById('qrCloseBtn').addEventListener('click', closeModal);
+    qrRefreshBtn.addEventListener('click', startLogin);
+    document.getElementById('logoutBtn').addEventListener('click', () => {
+        logout().catch(e => alert(e.message));
+    });
+    document.getElementById('noticeCloseBtn').addEventListener('click', () => {
+        document.getElementById('noticeBar').style.display = 'none';
+    });
+
+    async function startLogin() {
+        stopPolling();
+        qrModal.classList.add('show');
+        qrBox.innerHTML = '';
+        qrStatus.textContent = '正在获取二维码…';
+        qrStatus.className = 'qr-status';
+        qrRefreshBtn.style.display = 'none';
+
+        try {
+            const resp = await apiFetch('/api/bots/login', { method: 'POST' });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.error || ('请求失败 ' + resp.status));
+            }
+            const slot = await resp.json();
+            currentSlotId = slot.slotId;
+
+            if (slot.qrType === 'url') {
+                // qrContent 是微信的二维码落地页 URL，本地生成 QR 图展示
+                try {
+                    const qr = qrcode(0, 'M');
+                    qr.addData(slot.qrContent);
+                    qr.make();
+                    const img = document.createElement('img');
+                    img.src = qr.createDataURL(4, 4);
+                    qrBox.appendChild(img);
+                } catch (e) {
+                    qrBox.innerHTML = '<a href="' + slot.qrContent + '" target="_blank">打开二维码链接</a>';
+                }
+            } else {
+                const img = document.createElement('img');
+                let content = slot.qrContent;
+                if (content.startsWith('data:image')) {
+                    img.src = content;
+                } else {
+                    img.src = 'data:image/png;base64,' + content;
+                }
+                qrBox.appendChild(img);
+            }
+            qrStatus.textContent = STATUS_TEXT.WAITING;
+            pollStatus();
+        } catch (e) {
+            qrStatus.textContent = e.message;
+            qrStatus.className = 'qr-status err';
+            qrRefreshBtn.style.display = '';
+        }
+    }
+
+    function pollStatus() {
+        stopPolling();
+        pollTimer = setInterval(async () => {
+            if (!currentSlotId) return;
+            try {
+                const resp = await apiFetch('/api/bots/login/' + encodeURIComponent(currentSlotId) + '/status');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                qrStatus.textContent = STATUS_TEXT[data.status] || data.status;
+
+                if (data.status === 'CONFIRMED') {
+                    qrStatus.className = 'qr-status ok';
+                    stopPolling();
+                    refreshList();
+                    setTimeout(closeModal, 1200);
+                } else if (data.status === 'EXPIRED' || data.status === 'FAILED') {
+                    qrStatus.className = 'qr-status err';
+                    qrRefreshBtn.style.display = '';
+                    stopPolling();
+                } else {
+                    qrStatus.className = 'qr-status';
+                }
+            } catch (e) { /* 网络抖动时静默重试 */ }
+        }, 2000);
+    }
+
+    function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function closeModal() {
+        stopPolling();
+        currentSlotId = null;
+        qrModal.classList.remove('show');
+    }
+
+    async function refreshList() {
+        const tbody = document.getElementById('botTableBody');
+        try {
+            const resp = await apiFetch('/api/bots');
+            if (!resp.ok) throw new Error(await readApiError(resp));
+            const bots = await resp.json();
+            if (!bots.length) {
+                tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无机器人，点击右上角"添加机器人"扫码登录</td></tr>';
+                return;
+            }
+            tbody.innerHTML = '';
+            for (const bot of bots) {
+                const tr = document.createElement('tr');
+                const online = bot.status === 'ONLINE';
+                tr.innerHTML =
+                    '<td class="mono">' + escapeHtml(bot.userId || '-') + '</td>' +
+                    '<td class="mono">' + escapeHtml(bot.botId) + '</td>' +
+                    '<td><span class="badge ' + (online ? 'badge-online' : 'badge-offline') + '">' +
+                        (online ? '在线' : '离线') + '</span></td>' +
+                    '<td class="mono">' + escapeHtml(formatTime(bot.onlineSince)) + '</td>' +
+                    '<td><button class="btn btn-danger" data-bot="' + escapeHtml(bot.botId) + '">' +
+                        (online ? '下线' : '删除') + '</button></td>';
+                tbody.appendChild(tr);
+            }
+            tbody.querySelectorAll('button[data-bot]').forEach(btn => {
+                btn.addEventListener('click', () => removeBot(btn.dataset.bot));
+            });
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败，请刷新重试</td></tr>';
+        }
+    }
+
+    async function removeBot(botId) {
+        if (!confirm('删除后，该机器人的登录状态和所有聊天对象的记忆、人设及聊天数据都会永久删除。确定删除 ' + botId + ' 吗？')) return;
+        try {
+            const resp = await apiFetch('/api/bots/' + encodeURIComponent(botId) + '/remove', { method: 'POST' });
+            if (!resp.ok) throw new Error(await readApiError(resp));
+            refreshList();
+        } catch (e) {
+            alert(e.message);
+        }
+    }
+
+    function formatTime(iso) {
+        if (!iso) return '-';
+        const d = new Date(iso);
+        if (isNaN(d)) return iso;
+        const pad = n => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+            ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g,
+            c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    async function initialize() {
+        const me = await loadCurrentUser();
+        document.getElementById('currentUsername').textContent = me.username;
+        if (me.role === 'ADMIN') {
+            document.getElementById('adminLink').style.display = 'inline-flex';
+        }
+        await refreshList();
+        setInterval(refreshList, 5000);
+    }
+
+    initialize().catch(e => {
+        const tbody = document.getElementById('botTableBody');
+        tbody.innerHTML = '<tr><td colspan="5" class="empty"></td></tr>';
+        tbody.querySelector('.empty').textContent = e.message;
+    });
+</script>
+</body>
+</html>

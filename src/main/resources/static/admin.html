@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>账号管理 · 微信机器人管理</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; background: #f5f6f8; color: #1f2329; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+        .container { max-width: 1040px; margin: 0 auto; padding: 24px 16px 48px; }
+        header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+        h1 { margin: 0; font-size: 18px; font-weight: 600; }
+        h2 { margin: 0 0 16px; font-size: 15px; font-weight: 600; }
+        .header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .btn { border: 0; border-radius: 6px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+        .btn-primary { background: #1668dc; color: #fff; }
+        .btn-primary:hover { background: #3d8bff; }
+        .btn-ghost { background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; }
+        .btn-danger { background: transparent; color: #d83931; border: 1px solid #f1b0ac; }
+        .btn-small { padding: 5px 10px; font-size: 12px; }
+        .btn:disabled { opacity: .45; cursor: not-allowed; }
+        .create-panel { margin-bottom: 20px; padding: 18px; background: #fff; border: 1px solid #e8eaee; border-radius: 8px; }
+        .create-form { display: grid; grid-template-columns: 1.2fr 1.4fr .8fr auto; gap: 12px; align-items: end; }
+        .field label { display: block; margin-bottom: 6px; color: #6b7280; font-size: 12px; }
+        input, select { width: 100%; height: 38px; border: 1px solid #d9dde5; border-radius: 6px; padding: 0 10px; background: #fff; color: #1f2329; font: inherit; font-size: 13px; }
+        input:focus, select:focus { outline: 2px solid rgba(22, 104, 220, .16); border-color: #1668dc; }
+        .message { min-height: 20px; margin-top: 10px; font-size: 13px; color: #c9362b; }
+        .message.ok { color: #16894b; }
+        .table-wrap { overflow-x: auto; border-radius: 8px; }
+        table { width: 100%; min-width: 760px; border-collapse: collapse; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+        th, td { padding: 12px 14px; border-bottom: 1px solid #f0f1f3; text-align: left; font-size: 13px; }
+        th { background: #fafbfc; color: #6b7280; font-weight: 500; }
+        tr:last-child td { border-bottom: 0; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+        .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; }
+        .enabled { background: #e8f7ee; color: #16894b; }
+        .disabled { background: #f3f4f6; color: #6b7280; }
+        .actions { display: flex; gap: 7px; }
+        .empty { padding: 32px; text-align: center; color: #9ca3af; }
+        @media (max-width: 760px) {
+            header { align-items: flex-start; flex-direction: column; }
+            .create-form { grid-template-columns: 1fr 1fr; }
+            .create-form .btn { width: 100%; }
+        }
+        @media (max-width: 440px) {
+            .create-form { grid-template-columns: 1fr; }
+        }
+    </style>
+    <script src="/auth.js"></script>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>账号管理</h1>
+        <div class="header-actions">
+            <a class="btn btn-ghost" href="/">返回机器人</a>
+            <button class="btn btn-ghost" id="logoutBtn">退出</button>
+        </div>
+    </header>
+
+    <section class="create-panel">
+        <h2>创建管理账号</h2>
+        <form class="create-form" id="createForm">
+            <div class="field">
+                <label for="newUsername">用户名</label>
+                <input id="newUsername" required minlength="3" maxlength="32" autocomplete="off">
+            </div>
+            <div class="field">
+                <label for="newPassword">初始密码</label>
+                <input id="newPassword" type="password" required minlength="12" autocomplete="new-password">
+            </div>
+            <div class="field">
+                <label for="newRole">角色</label>
+                <select id="newRole">
+                    <option value="USER">普通用户</option>
+                    <option value="ADMIN">管理员</option>
+                </select>
+            </div>
+            <button class="btn btn-primary" id="createButton" type="submit">创建账号</button>
+        </form>
+        <div class="message" id="formMessage" role="alert"></div>
+    </section>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr><th>用户名</th><th>角色</th><th>状态</th><th>最后登录</th><th>操作</th></tr>
+            </thead>
+            <tbody id="userTableBody"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+        </table>
+    </div>
+</div>
+<script>
+    let currentUser = null;
+    let users = [];
+
+    document.getElementById('logoutBtn').addEventListener('click', () => logout().catch(e => alert(e.message)));
+    document.getElementById('createForm').addEventListener('submit', createUser);
+
+    async function createUser(event) {
+        event.preventDefault();
+        const button = document.getElementById('createButton');
+        const message = document.getElementById('formMessage');
+        button.disabled = true;
+        message.className = 'message';
+        message.textContent = '';
+        try {
+            const response = await apiFetch('/api/admin/users', {
+                method: 'POST',
+                json: {
+                    username: document.getElementById('newUsername').value.trim(),
+                    password: document.getElementById('newPassword').value,
+                    role: document.getElementById('newRole').value
+                }
+            });
+            if (!response.ok) throw new Error(await readApiError(response));
+            document.getElementById('createForm').reset();
+            message.className = 'message ok';
+            message.textContent = '账号已创建';
+            await refreshUsers();
+        } catch (e) {
+            message.textContent = e.message;
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    async function refreshUsers() {
+        const response = await apiFetch('/api/admin/users');
+        if (!response.ok) throw new Error(await readApiError(response));
+        users = await response.json();
+        renderUsers();
+    }
+
+    function renderUsers() {
+        const tbody = document.getElementById('userTableBody');
+        tbody.innerHTML = '';
+        for (const user of users) {
+            const tr = document.createElement('tr');
+            const isSelf = user.id === currentUser.id;
+            tr.innerHTML =
+                '<td>' + escapeHtml(user.username) + (isSelf ? ' <span class="mono">(当前)</span>' : '') + '</td>' +
+                '<td>' + (user.role === 'ADMIN' ? '管理员' : '普通用户') + '</td>' +
+                '<td><span class="badge ' + (user.enabled ? 'enabled' : 'disabled') + '">' +
+                    (user.enabled ? '可用' : '已禁用') + '</span></td>' +
+                '<td class="mono">' + escapeHtml(formatTime(user.lastLoginAt)) + '</td>' +
+                '<td><div class="actions">' +
+                    '<button class="btn btn-ghost btn-small" data-action="password" data-id="' + user.id + '">重置密码</button>' +
+                    '<button class="btn ' + (user.enabled ? 'btn-danger' : 'btn-ghost') + ' btn-small" data-action="enabled" data-id="' + user.id + '"' +
+                        (isSelf && user.enabled ? ' disabled' : '') + '>' + (user.enabled ? '禁用' : '启用') + '</button>' +
+                '</div></td>';
+            tbody.appendChild(tr);
+        }
+        tbody.querySelectorAll('button[data-action]').forEach(button => {
+            button.addEventListener('click', () => handleUserAction(button.dataset.id, button.dataset.action));
+        });
+    }
+
+    async function handleUserAction(userId, action) {
+        const user = users.find(item => item.id === userId);
+        if (!user) return;
+        try {
+            if (action === 'enabled') {
+                const response = await apiFetch('/api/admin/users/' + encodeURIComponent(userId) + '/enabled', {
+                    method: 'POST', json: { enabled: !user.enabled }
+                });
+                if (!response.ok) throw new Error(await readApiError(response));
+            } else {
+                const password = window.prompt('为 ' + user.username + ' 设置新密码（至少 12 个字符）');
+                if (password === null) return;
+                const response = await apiFetch('/api/admin/users/' + encodeURIComponent(userId) + '/password', {
+                    method: 'POST', json: { password }
+                });
+                if (!response.ok) throw new Error(await readApiError(response));
+                if (userId === currentUser.id) {
+                    window.location.replace('/login.html');
+                    return;
+                }
+            }
+            await refreshUsers();
+        } catch (e) {
+            alert(e.message);
+        }
+    }
+
+    function formatTime(value) {
+        return value ? String(value).replace('T', ' ').substring(0, 16) : '-';
+    }
+
+    function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g,
+            c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    async function initialize() {
+        currentUser = await loadCurrentUser();
+        if (currentUser.role !== 'ADMIN') {
+            window.location.replace('/');
+            return;
+        }
+        await refreshUsers();
+    }
+
+    initialize().catch(e => alert(e.message));
+</script>
+</body>
+</html>
