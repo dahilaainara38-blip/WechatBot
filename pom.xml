@@ -19,8 +19,6 @@
 	<properties>
 		<java.version>21</java.version>
 		<langchain4j.version>0.36.2</langchain4j.version>
-		<silk-codec.version>0.0.5</silk-codec.version>
-		<javacv.version>1.5.10</javacv.version>
 	</properties>
 
 	<dependencies>
@@ -73,20 +71,6 @@
 			<groupId>io.github.lith0924</groupId>
 			<artifactId>wechat-ilink-sdk</artifactId>
 			<version>2.3.3</version>
-		</dependency>
-
-		<!-- SILK 编解码：微信语音格式 SILK <-> PCM 互转 -->
-		<dependency>
-			<groupId>io.github.kasukusakura</groupId>
-			<artifactId>silk-codec</artifactId>
-			<version>${silk-codec.version}</version>
-		</dependency>
-
-		<!-- JavaCV：视频抽帧（FFmpeg 封装） -->
-		<dependency>
-			<groupId>org.bytedeco</groupId>
-			<artifactId>javacv-platform</artifactId>
-			<version>${javacv.version}</version>
 		</dependency>
 
 		<dependency>

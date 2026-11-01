@@ -57,6 +57,8 @@ public class StatefulChatMemory implements ChatMemory {
             - 新信息直接覆盖旧信息（如"还没吃饭"被"已吃午饭"覆盖，旧值消失）
             - 移除完全过时且不再相关的信息
             - 保留重要的长期背景信息
+            - 只能整理对话中明确出现的信息，不得补充人物行为、设备状态或现实背景
+            - 电话、位置、媒体内容等现实行为没有实际结果证据时不得写入摘要
             - 每条不超过30字
             - 总计不超过200字
             - 只输出摘要，不要其他文字
@@ -68,6 +70,7 @@ public class StatefulChatMemory implements ChatMemory {
     private final ProfileExtractor profileExtractor;
     private final ConversationIdentityService identityService;
     private final int maxBufferMessages;
+    private long summaryRevision;
 
     /** 异步摘要生成线程池，单线程串行 */
     private final ExecutorService summaryExecutor = Executors.newSingleThreadExecutor();
@@ -129,10 +132,11 @@ public class StatefulChatMemory implements ChatMemory {
             profileExtractor.updateProfileAsync(sessionId, allEvicted);
 
             final String oldSummary = currentSummary;
+            final long revision = ++summaryRevision;
             summaryExecutor.submit(() -> {
                 String newSummary = regenerateSummary(oldSummary, allEvicted);
                 if (newSummary != null && !newSummary.isBlank()) {
-                    applySummaryToStore(newSummary);
+                    applySummaryToStore(newSummary, revision);
                 }
             });
         }
@@ -142,7 +146,11 @@ public class StatefulChatMemory implements ChatMemory {
      * 异步摘要生成完成后，把新摘要写回 store。
      * synchronized 保证不会和 add() 并发写冲突。
      */
-    private synchronized void applySummaryToStore(String newSummary) {
+    private synchronized void applySummaryToStore(String newSummary, long revision) {
+        if (revision != summaryRevision) {
+            log.debug("忽略过期摘要 [session={}, revision={}]", id, revision);
+            return;
+        }
         try {
             List<ChatMessage> all = store.getMessages(id);
             List<ChatMessage> buffer = new ArrayList<>();
@@ -152,8 +160,7 @@ public class StatefulChatMemory implements ChatMemory {
                 }
             }
             persistMessages(newSummary, buffer);
-            log.info("状态摘要已异步写回 [session={}]: {}...", id,
-                    newSummary.length() > 50 ? newSummary.substring(0, 50) : newSummary);
+            log.info("状态摘要已异步写回 [session={}, revision={}]", id, revision);
         } catch (Exception e) {
             log.error("异步写回摘要失败 [session={}]", id, e);
         }
@@ -183,6 +190,7 @@ public class StatefulChatMemory implements ChatMemory {
 
     @Override
     public synchronized void clear() {
+        summaryRevision++;
         store.deleteMessages(id);
         summaryExecutor.shutdownNow();
     }
@@ -205,8 +213,7 @@ public class StatefulChatMemory implements ChatMemory {
             }
 
             String result = newSummary.trim();
-            log.info("状态摘要已更新 [session={}]: {}...", id,
-                    result.length() > 50 ? result.substring(0, 50) : result);
+            log.info("状态摘要已更新 [session={}]", id);
             return result;
         } catch (Exception e) {
             log.error("生成状态摘要失败 [session={}]", id, e);

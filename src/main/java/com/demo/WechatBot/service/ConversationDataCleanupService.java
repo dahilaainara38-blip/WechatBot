@@ -15,9 +15,11 @@ public class ConversationDataCleanupService {
     private static final Logger log = LoggerFactory.getLogger(ConversationDataCleanupService.class);
 
     private final JdbcTemplate jdbc;
+    private final AiChatService aiChatService;
 
-    public ConversationDataCleanupService(JdbcTemplate jdbc) {
+    public ConversationDataCleanupService(JdbcTemplate jdbc, AiChatService aiChatService) {
         this.jdbc = jdbc;
+        this.aiChatService = aiChatService;
     }
 
     /**
@@ -46,6 +48,7 @@ public class ConversationDataCleanupService {
                 "DELETE FROM relationship_states WHERE session_id LIKE ?", sessionPrefix);
         int contexts = jdbc.update(
                 "DELETE FROM conversation_contexts WHERE bot_id = ?", botId);
+        aiChatService.clearBotMemory(botId);
 
         log.info("机器人数据已彻底删除 [botId={}, personas={}, chatMemory={}, conversations={}, " +
                         "profiles={}, relationshipStates={}, contexts={}]",

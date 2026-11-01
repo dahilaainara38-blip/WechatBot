@@ -229,18 +229,6 @@ public class BotInstanceManager {
     }
 
     /**
-     * 发送主动消息（由定时任务调用），路由到对应机器人实例
-     */
-    public boolean sendProactiveMessage(String botId, String toUser, String text) {
-        BotInstance inst = bots.get(botId);
-        if (inst == null) {
-            log.warn("机器人不在线，跳过主动消息 [bot={}, to={}]", botId, toUser);
-            return false;
-        }
-        return inst.sendProactiveMessage(toUser, text);
-    }
-
-    /**
      * 启动时恢复所有已登录机器人（免扫码）。
      * 单个恢复失败不影响其他，失败的标记为离线等待重新扫码。
      */

@@ -98,12 +98,4 @@ public class MemoryStore {
                 sessionId);
     }
 
-    /**
-     * 查询所有有过对话记录的用户（用于主动消息推送）
-     */
-    public List<String> findActiveSessions() {
-        return jdbc.queryForList(
-                "SELECT DISTINCT session_id FROM conversations",
-                String.class);
-    }
 }

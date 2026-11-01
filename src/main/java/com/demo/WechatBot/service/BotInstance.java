@@ -12,7 +12,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 
@@ -98,7 +97,8 @@ public class BotInstance {
                 // 1. 文本消息
                 if (item.getType() == 1 && item.getText_item() != null) {
                     String text = item.getText_item().getText();
-                    log.info("收到文本 [bot={}, from={}]: {}", botId, fromUser, text);
+                    log.info("收到文本 [bot={}, from={}, length={}]", botId, fromUser,
+                            text != null ? text.length() : 0);
                     if (text != null && !text.trim().isEmpty()) {
                         submitAiTask(fromUser, text);
                     }
@@ -109,57 +109,7 @@ public class BotInstance {
                     submitMultimodalTask(fromUser, () ->
                             multimodalService.handleImage(client, item, sessionKey(fromUser)));
                 }
-                // 3. 语音消息
-                else if (item.getVoice_item() != null) {
-                    log.info("收到语音 [bot={}, from={}]", botId, fromUser);
-                    submitMultimodalTask(fromUser, () ->
-                            multimodalService.handleVoice(client, item, sessionKey(fromUser)));
-                }
-                // 4. 视频消息
-                else if (item.getVideo_item() != null) {
-                    log.info("收到视频 [bot={}, from={}]", botId, fromUser);
-                    submitMultimodalTask(fromUser, () ->
-                            multimodalService.handleVideo(client, item, sessionKey(fromUser)));
-                }
             }
-        }
-    }
-
-    /**
-     * 发送主动消息（由定时任务经由 BotInstanceManager 调用）
-     */
-    public boolean sendProactiveMessage(String toUser, String text) {
-        if (!client.isLoggedIn()) {
-            log.warn("机器人未登录，跳过主动消息 [bot={}, to={}]", botId, toUser);
-            return false;
-        }
-        Future<Boolean> task = msgExecutor.submit(() -> {
-            try {
-                client.startTyping(toUser);
-            } catch (IOException e) {
-                log.warn("发送主动消息输入态失败 [bot={}, to={}]", botId, toUser, e);
-            }
-            sleepRandom(1000, 3000);
-            try {
-                client.stopTyping(toUser);
-            } catch (IOException e) {
-                log.warn("停止主动消息输入态失败 [bot={}, to={}]", botId, toUser, e);
-            }
-
-            try {
-                sendReply(toUser, text);
-                log.info("主动消息已发送 [bot={}, to={}]", botId, toUser);
-                return true;
-            } catch (IOException e) {
-                log.error("发送主动消息失败 [bot={}, to={}]", botId, toUser, e);
-                return false;
-            }
-        });
-        try {
-            return task.get();
-        } catch (Exception e) {
-            log.error("等待主动消息发送结果失败 [bot={}, to={}]", botId, toUser, e);
-            return false;
         }
     }
 
@@ -213,7 +163,8 @@ public class BotInstance {
             String reply;
             try {
                 reply = aiChatService.chat(sessionKey(fromUser), text);
-                log.info("AI回复 [bot={}, to={}]: {}", botId, fromUser, reply);
+                log.info("AI回复已生成 [bot={}, to={}, length={}]", botId, fromUser,
+                        reply != null ? reply.length() : 0);
             } catch (Exception e) {
                 log.error("AI调用失败 [bot={}, to={}]", botId, fromUser, e);
                 reply = "抱歉，我现在有点卡顿，请稍后再试。";
@@ -221,7 +172,7 @@ public class BotInstance {
 
             try {
                 client.stopTyping(fromUser);
-                sendReply(fromUser, reply);
+                sendReply(fromUser, reply, aiChatService.isPersonaReady(sessionKey(fromUser)));
             } catch (IOException e) {
                 log.error("发送消息失败 [bot={}, to={}]", botId, fromUser, e);
             }
@@ -251,33 +202,16 @@ public class BotInstance {
 
             try {
                 client.stopTyping(fromUser);
-                sendReply(fromUser, reply);
+                sendReply(fromUser, reply, aiChatService.isPersonaReady(sessionKey(fromUser)));
             } catch (IOException e) {
                 log.error("发送消息失败 [bot={}, to={}]", botId, fromUser, e);
             }
         });
     }
 
-    /**
-     * 统一的回复发送逻辑：先尝试语音回复，再发送文本。
-     */
-    private void sendReply(String toUser, String reply) throws IOException {
-        VoiceService.SilkAudioResult voiceResult =
-                multimodalService.maybeSynthesizeVoice(sessionKey(toUser), reply);
-        if (voiceResult != null) {
-            try {
-                client.sendVoice(toUser,
-                        voiceResult.silkData(),
-                        "voice.silk",
-                        voiceResult.playTimeMs(),
-                        voiceResult.sampleRate());
-                log.info("语音回复已发送 [bot={}, to={}]", botId, toUser);
-            } catch (IOException e) {
-                log.warn("语音回复发送失败，降级为文本 [bot={}, to={}]", botId, toUser, e);
-            }
-        }
-
-        List<String> parts = splitReply(reply);
+    /** 统一的文本回复发送逻辑。 */
+    private void sendReply(String toUser, String reply, boolean splitMessages) throws IOException {
+        List<String> parts = splitMessages ? splitReply(reply) : List.of(reply);
         for (int i = 0; i < parts.size(); i++) {
             if (i > 0) {
                 sleepRandom(500, 1500);

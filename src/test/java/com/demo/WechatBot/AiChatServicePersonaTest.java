@@ -10,6 +10,7 @@ import com.demo.WechatBot.service.OnboardingService;
 import com.demo.WechatBot.service.RelationshipStateExtractor;
 import com.demo.WechatBot.service.RelationshipStateStore;
 import com.demo.WechatBot.service.UserProfileStore;
+import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,10 +18,13 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.core.io.Resource;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.List;
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
@@ -40,6 +44,7 @@ class AiChatServicePersonaTest {
     private RelationshipStateExtractor relationshipStateExtractor;
     private BotPersonaStore personaStore;
     private MemoryStore memoryStore;
+    private ChatMemoryStore chatMemoryStore;
 
     @BeforeEach
     void setUp() {
@@ -47,7 +52,7 @@ class AiChatServicePersonaTest {
         AiProperties aiProperties = new AiProperties();
         Resource promptResource = mock(Resource.class);
         memoryStore = mock(MemoryStore.class);
-        ChatMemoryStore chatMemoryStore = mock(ChatMemoryStore.class);
+        chatMemoryStore = mock(ChatMemoryStore.class);
         UserProfileStore userProfileStore = mock(UserProfileStore.class);
         RelationshipStateStore relationshipStateStore = mock(RelationshipStateStore.class);
         personaStore = mock(BotPersonaStore.class);
@@ -71,12 +76,13 @@ class AiChatServicePersonaTest {
     @Test
     void newConversationUsesOnboardingInsteadOfNormalChat() {
         when(personaStore.find(SESSION)).thenReturn(null);
-        when(onboardingService.handle(eq(SESSION), eq("你好"), isNull()))
+        when(onboardingService.start(SESSION))
                 .thenReturn("你希望我叫什么名字？");
 
         String reply = aiChatService.chat(SESSION, "你好");
 
         assertEquals("你希望我叫什么名字？", reply);
+        verify(onboardingService).start(SESSION);
         verifyNoInteractions(assistant);
         verify(memoryStore, never()).save(anyString(), anyString(), anyString());
     }
@@ -85,7 +91,7 @@ class AiChatServicePersonaTest {
     void readyPersonaIsInjectedIntoNormalChatPrompt() {
         BotPersonaStore.Persona ready = new BotPersonaStore.Persona(
                 SESSION, BotPersonaStore.STATUS_READY,
-                "阿哲", "男", "你是阿哲，性格沉稳。", "", "male-voice");
+                "阿哲", "男", "你是阿哲，性格沉稳。", "");
         when(personaStore.find(SESSION)).thenReturn(ready);
         when(personaStore.isReady(ready)).thenReturn(true);
         when(personaStore.getPersonaText(SESSION)).thenReturn("你是阿哲，性格沉稳。");
@@ -116,10 +122,18 @@ class AiChatServicePersonaTest {
     }
 
     @Test
-    void proactiveMessageWaitsUntilPersonaIsReady() {
-        when(personaStore.isReady(SESSION)).thenReturn(false);
+    void mediaFailureIsStoredAsSystemFactInReusedSessionMemory() {
+        when(chatMemoryStore.getMessages(SESSION)).thenReturn(List.of());
 
-        assertNull(aiChatService.generateProactiveMessage(SESSION));
+        aiChatService.recordMediaFailure(SESSION);
+
+        verify(chatMemoryStore).updateMessages(eq(SESSION), argThat(messages ->
+                messages.stream().anyMatch(message -> message instanceof SystemMessage system
+                        && system.text().contains("识别失败"))));
+        verify(memoryStore).save(eq(SESSION), eq("system"), argThat(note -> note.contains("不得声称已经看过")));
+        Map<?, ?> memories = (Map<?, ?>) ReflectionTestUtils.getField(aiChatService, "chatMemories");
+        assertEquals(1, memories.size());
         verifyNoInteractions(assistant);
     }
+
 }

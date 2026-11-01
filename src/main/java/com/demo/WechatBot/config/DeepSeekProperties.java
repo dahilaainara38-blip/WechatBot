@@ -14,6 +14,8 @@ public class DeepSeekProperties {
     private String apiKey;
     private String modelName = "deepseek-chat";
     private String baseUrl = "https://api.deepseek.com";
+    private int timeoutSeconds = 25;
+    private int maxRetries = 1;
 
     public String getApiKey() {
         return apiKey;
@@ -37,5 +39,21 @@ public class DeepSeekProperties {
 
     public void setBaseUrl(String baseUrl) {
         this.baseUrl = baseUrl;
+    }
+
+    public int getTimeoutSeconds() {
+        return timeoutSeconds;
+    }
+
+    public void setTimeoutSeconds(int timeoutSeconds) {
+        this.timeoutSeconds = timeoutSeconds;
+    }
+
+    public int getMaxRetries() {
+        return maxRetries;
+    }
+
+    public void setMaxRetries(int maxRetries) {
+        this.maxRetries = maxRetries;
     }
 }

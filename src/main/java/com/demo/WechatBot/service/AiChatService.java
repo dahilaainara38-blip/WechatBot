@@ -2,11 +2,8 @@ package com.demo.WechatBot.service;
 
 import com.demo.WechatBot.config.AiProperties;
 import com.demo.WechatBot.config.DeepSeekProperties;
-import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
-import dev.langchain4j.model.output.Response;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.MemoryId;
 import dev.langchain4j.service.SystemMessage;
@@ -14,6 +11,7 @@ import dev.langchain4j.service.UserMessage;
 import dev.langchain4j.service.V;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
@@ -21,12 +19,14 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.DayOfWeek;
 import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * AI 聊天服务
@@ -63,6 +63,7 @@ public class AiChatService {
     private OnboardingService onboardingService;
     private ChatLanguageModel model;
     private ChatAssistant assistant;
+    private final Map<Object, StatefulChatMemory> chatMemories = new ConcurrentHashMap<>();
 
     public AiChatService(DeepSeekProperties deepSeekProperties,
                          AiProperties aiProperties,
@@ -94,6 +95,8 @@ public class AiChatService {
                 .baseUrl(deepSeekProperties.getBaseUrl())
                 .apiKey(deepSeekProperties.getApiKey())
                 .modelName(deepSeekProperties.getModelName())
+                .timeout(Duration.ofSeconds(deepSeekProperties.getTimeoutSeconds()))
+                .maxRetries(deepSeekProperties.getMaxRetries())
                 .build();
 
         this.profileExtractor = new ProfileExtractor(model, userProfileStore, identityService);
@@ -102,13 +105,13 @@ public class AiChatService {
                 model, relationshipStateStore, identityService);
 
         this.onboardingService = new OnboardingService(
-                model, personaStore, aiProperties.getTtsVoice(), aiProperties.getTtsMaleVoice());
+                model, personaStore);
 
         this.assistant = AiServices.builder(ChatAssistant.class)
                 .chatLanguageModel(model)
                 .chatMemoryProvider(memoryId ->
-                        new StatefulChatMemory(
-                                memoryId, chatMemoryStore, model, profileExtractor, identityService, 8))
+                        chatMemories.computeIfAbsent(memoryId, id -> new StatefulChatMemory(
+                                id, chatMemoryStore, model, profileExtractor, identityService, 16)))
                 .build();
 
         log.info("AiChatService initialized with model: {} ({})",
@@ -132,6 +135,9 @@ public class AiChatService {
             }
 
             BotPersonaStore.Persona persona = personaStore.find(sessionId);
+            if (persona == null) {
+                return onboardingService.start(sessionId);
+            }
             if (!personaStore.isReady(persona)) {
                 return onboardingService.handle(sessionId, message, persona);
             }
@@ -157,6 +163,14 @@ public class AiChatService {
         return personaStore.isReady(sessionId);
     }
 
+    /** 非文本消息无法回答当前设置问题时，只返回当前引导提示。 */
+    public String getOnboardingPrompt(String sessionId) {
+        BotPersonaStore.Persona persona = personaStore.find(sessionId);
+        return persona == null
+                ? onboardingService.start(sessionId)
+                : onboardingService.currentPrompt(persona);
+    }
+
     private boolean isResetPersonaCommand(String message) {
         if (message == null) return false;
         String command = message.trim();
@@ -175,6 +189,33 @@ public class AiChatService {
      */
     public void saveMultimodalContext(String sessionId, String role, String content) {
         memoryStore.save(sessionId, role, content);
+    }
+
+    /** 将失败事实放入会话窗口，避免下一轮假装媒体已经成功识别。 */
+    public void recordMediaFailure(String sessionId) {
+        String note = "【媒体处理结果】上一张图片识别失败，没有可见内容，不得声称已经看过。";
+        StatefulChatMemory memory = chatMemories.computeIfAbsent(sessionId, id ->
+                new StatefulChatMemory(id, chatMemoryStore, model, profileExtractor, identityService, 16));
+        memory.add(dev.langchain4j.data.message.SystemMessage.from(note));
+        memoryStore.save(sessionId, "system", note);
+    }
+
+    /** 删除机器人数据时同步释放对应的内存实例和后台任务。 */
+    public void clearBotMemory(String botId) {
+        String prefix = botId + ":";
+        for (Object id : chatMemories.keySet()) {
+            if (!String.valueOf(id).startsWith(prefix)) continue;
+            StatefulChatMemory memory = chatMemories.remove(id);
+            if (memory != null) memory.clear();
+        }
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        chatMemories.values().forEach(StatefulChatMemory::shutdown);
+        chatMemories.clear();
+        if (profileExtractor != null) profileExtractor.shutdown();
+        if (relationshipStateExtractor != null) relationshipStateExtractor.shutdown();
     }
 
     /**
@@ -329,60 +370,4 @@ public class AiChatService {
         }
     }
 
-    private static final String PROACTIVE_DIRECTIVE = """
-
-            【主动消息】
-            现在是你主动想找对方聊天，不是在回复对方的消息。像突然想起对方了一样，自然地说一句话开场。
-            可以分享你刚在做什么、问对方在干嘛、或者就是想找对方说话。只说一两句，简短自然。
-            请结合当前关系状态和心情来决定语气：如果关系温度低或心情不好，语气可以冷淡一点；
-            如果对方很久没理你，可以带点委屈或小脾气；如果甜蜜温暖，可以撒娇。
-            """;
-
-    /**
-     * 生成主动消息（由定时任务调用）。
-     * <p>
-     * 直接调用模型，不经过 AiServices，避免往对话记忆里写入指令性消息。
-     * 生成的回复会作为 assistant 消息存入记忆，后续对话中 AI 能记得自己主动说过什么。
-     * </p>
-     */
-    public String generateProactiveMessage(String sessionId) {
-        log.info("生成主动消息 [session={}]", sessionId);
-        if (!personaStore.isReady(sessionId)) {
-            log.debug("人设尚未确认，跳过主动消息 [session={}]", sessionId);
-            return null;
-        }
-        try {
-            StatefulChatMemory memory = new StatefulChatMemory(
-                    sessionId, chatMemoryStore, model, profileExtractor, identityService, 8);
-
-           List<ChatMessage> messages = new ArrayList<>();
-          messages.add(dev.langchain4j.data.message.SystemMessage.from(buildDynamicPrompt(sessionId) + PROACTIVE_DIRECTIVE));
-           messages.addAll(memory.messages());
-
-            Response<AiMessage> response = model.generate(messages);
-            String reply = response.content().text();
-
-            if (reply == null || reply.isBlank()) {
-                log.warn("主动消息为空 [session={}]", sessionId);
-                return null;
-            }
-
-            log.info("主动消息已生成 [session={}]: {}", sessionId, reply);
-            return reply;
-        } catch (Exception e) {
-            log.error("生成主动消息失败 [session={}]", sessionId, e);
-            return null;
-        }
-    }
-
-    /**
-     * 主动消息实际发送成功后，才写入窗口和完整日志。
-     */
-    public void saveProactiveMessage(String sessionId, String reply) {
-        if (reply == null || reply.isBlank()) return;
-        StatefulChatMemory memory = new StatefulChatMemory(
-                sessionId, chatMemoryStore, model, profileExtractor, identityService, 8);
-        memory.add(AiMessage.from(reply));
-        memoryStore.save(sessionId, "assistant", reply);
-    }
 }

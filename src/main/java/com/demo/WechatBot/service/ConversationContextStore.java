@@ -13,7 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 持久化 iLink 会话上下文，使服务重启后仍能向已有会话发送主动消息。
+ * 持久化 iLink 会话上下文，供机器人恢复和处理后续消息使用。
  */
 @Component
 public class ConversationContextStore {

@@ -84,12 +84,12 @@ public class ImageService {
             );
 
             String reply = response.content().text();
-            log.info("图片描述: {}", reply);
+            log.info("图片描述完成: {} 字", reply != null ? reply.length() : 0);
             return reply;
 
         } catch (Exception e) {
             log.error("图片识别失败", e);
-            return "图片内容无法识别";
+            throw new IllegalStateException("图片识别失败", e);
         }
     }
 }

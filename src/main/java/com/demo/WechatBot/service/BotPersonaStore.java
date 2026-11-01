@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * 每个会话（botId:fromUserId）一行，存储用户自定义的机器人人设。
  * 状态机：ONBOARDING（引导中）→ CONFIRMING（待用户确认）→ READY（生效）。
- * 引导过程中的对话草稿持久化在 draft_context，重启后可以继续引导。
+ * 当前步骤与用户逐项确认的 JSON 字段会持久化，重启后可以继续引导。
  * </p>
  */
 @Component
@@ -27,7 +27,15 @@ public class BotPersonaStore {
     public static final String STATUS_READY = "READY";
 
     public record Persona(String sessionKey, String status, String name, String gender,
-                          String personaText, String draftContext, String ttsVoice) {
+                          String personaText, String draftContext,
+                          String onboardingStep, String draftFields) {
+        public Persona(String sessionKey, String status, String name, String gender,
+                       String personaText, String draftContext) {
+            this(sessionKey, status, name, gender, personaText, draftContext,
+                    STATUS_CONFIRMING.equals(status) ? OnboardingService.STEP_CONFIRM
+                            : OnboardingService.STEP_NAME,
+                    "{}");
+        }
     }
 
     private final JdbcTemplate jdbc;
@@ -49,17 +57,40 @@ public class BotPersonaStore {
                     gender          TEXT,
                     persona_text    TEXT,
                     draft_context   TEXT,
-                    tts_voice       TEXT,
+                    onboarding_step TEXT NOT NULL DEFAULT 'NAME',
+                    draft_fields    TEXT NOT NULL DEFAULT '{}',
                     created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
                     updated_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
                 )
                 """);
+        migrateOnboardingColumns();
         log.info("Bot persona store initialized");
+    }
+
+    private void migrateOnboardingColumns() {
+        var columns = jdbc.queryForList("PRAGMA table_info(bot_personas)");
+        addColumnIfMissing(columns, "onboarding_step",
+                "ALTER TABLE bot_personas ADD COLUMN onboarding_step TEXT NOT NULL DEFAULT 'NAME'");
+        addColumnIfMissing(columns, "draft_fields",
+                "ALTER TABLE bot_personas ADD COLUMN draft_fields TEXT NOT NULL DEFAULT '{}'");
+        if (columns.stream().anyMatch(column -> "tts_voice".equals(column.get("name")))) {
+            jdbc.execute("ALTER TABLE bot_personas DROP COLUMN tts_voice");
+            log.info("已移除 bot_personas 的 tts_voice 字段");
+        }
+    }
+
+    private void addColumnIfMissing(java.util.List<Map<String, Object>> columns,
+                                    String name, String sql) {
+        if (columns.stream().noneMatch(column -> name.equals(column.get("name")))) {
+            jdbc.execute(sql);
+            log.info("已为 bot_personas 增加 {} 字段", name);
+        }
     }
 
     public Persona find(String sessionKey) {
         return jdbc.query(
-                "SELECT session_key, status, name, gender, persona_text, draft_context, tts_voice " +
+                "SELECT session_key, status, name, gender, persona_text, draft_context, " +
+                        "onboarding_step, draft_fields " +
                         "FROM bot_personas WHERE session_key = ?",
                 (rs, rowNum) -> new Persona(
                         rs.getString("session_key"),
@@ -68,7 +99,8 @@ public class BotPersonaStore {
                         rs.getString("gender"),
                         rs.getString("persona_text"),
                         rs.getString("draft_context"),
-                        rs.getString("tts_voice")),
+                        rs.getString("onboarding_step"),
+                        rs.getString("draft_fields")),
                 sessionKey
         ).stream().findFirst().orElse(null);
     }
@@ -78,32 +110,38 @@ public class BotPersonaStore {
      */
     public void createOnboarding(String sessionKey) {
         jdbc.update(
-                "INSERT OR IGNORE INTO bot_personas (session_key, status, draft_context) VALUES (?, ?, '')",
+                "INSERT OR IGNORE INTO bot_personas " +
+                        "(session_key, status, draft_context, onboarding_step, draft_fields) " +
+                        "VALUES (?, ?, '', 'NAME', '{}')",
                 sessionKey, STATUS_ONBOARDING
         );
     }
 
-    /**
-     * 更新引导对话草稿
-     */
-    public void updateDraft(String sessionKey, String draftContext) {
+    /** 保存当前引导步骤和用户已经逐项确认的字段。 */
+    public void saveOnboardingProgress(String sessionKey, String step, String draftFields) {
         jdbc.update(
-                "UPDATE bot_personas SET draft_context = ?, updated_at = datetime('now', 'localtime') WHERE session_key = ?",
-                draftContext, sessionKey
+                "UPDATE bot_personas SET status = ?, onboarding_step = ?, draft_fields = ?, " +
+                        "updated_at = datetime('now', 'localtime') WHERE session_key = ?",
+                STATUS_ONBOARDING, step, draftFields, sessionKey
         );
     }
 
     /**
      * 人设卡已生成，等待用户确认（ONBOARDING/CONFIRMING → CONFIRMING）
      */
-    public void savePending(String sessionKey, String name, String gender, String personaText, String ttsVoice) {
+    public void savePending(String sessionKey, String name, String gender, String personaText) {
         jdbc.update(
-                "UPDATE bot_personas SET status = ?, name = ?, gender = ?, persona_text = ?, tts_voice = ?, " +
+                "UPDATE bot_personas SET status = ?, onboarding_step = 'CONFIRM', " +
+                        "name = ?, gender = ?, persona_text = ?, " +
                         "updated_at = datetime('now', 'localtime') WHERE session_key = ?",
-                STATUS_CONFIRMING, name, gender, personaText, ttsVoice, sessionKey
+                STATUS_CONFIRMING, name, gender, personaText, sessionKey
         );
-        nameCache.put(sessionKey, name);
-        log.info("人设卡待确认 [session={}, name={}]", sessionKey, name);
+        if (name != null && !name.isBlank()) {
+            nameCache.put(sessionKey, name);
+        } else {
+            nameCache.remove(sessionKey);
+        }
+        log.info("人设卡待确认 [session={}]", sessionKey);
     }
 
     /**
@@ -111,7 +149,8 @@ public class BotPersonaStore {
      */
     public void markReady(String sessionKey) {
         jdbc.update(
-                "UPDATE bot_personas SET status = ?, updated_at = datetime('now', 'localtime') WHERE session_key = ?",
+                "UPDATE bot_personas SET status = ?, onboarding_step = 'READY', " +
+                        "updated_at = datetime('now', 'localtime') WHERE session_key = ?",
                 STATUS_READY, sessionKey
         );
         log.info("人设已生效 [session={}]", sessionKey);
@@ -122,8 +161,9 @@ public class BotPersonaStore {
      */
     public void resetToOnboarding(String sessionKey) {
         jdbc.update(
-                "UPDATE bot_personas SET status = ?, name = NULL, gender = NULL, persona_text = NULL, " +
-                        "draft_context = '', tts_voice = NULL, updated_at = datetime('now', 'localtime') WHERE session_key = ?",
+                "UPDATE bot_personas SET status = ?, onboarding_step = 'NAME', name = NULL, " +
+                        "gender = NULL, persona_text = NULL, draft_context = '', draft_fields = '{}', " +
+                        "updated_at = datetime('now', 'localtime') WHERE session_key = ?",
                 STATUS_ONBOARDING, sessionKey
         );
         nameCache.remove(sessionKey);
@@ -161,17 +201,6 @@ public class BotPersonaStore {
                         k
                 ).stream().findFirst().filter(n -> n != null && !n.isBlank()).orElse("对方")
         );
-    }
-
-    /**
-     * 读取人设对应的 TTS 音色；未设置返回 null（调用方用默认音色）
-     */
-    public String getTtsVoice(String sessionKey) {
-        return jdbc.query(
-                "SELECT tts_voice FROM bot_personas WHERE session_key = ?",
-                (rs, rowNum) -> rs.getString("tts_voice"),
-                sessionKey
-        ).stream().findFirst().filter(v -> v != null && !v.isBlank()).orElse(null);
     }
 
     public void delete(String sessionKey) {
